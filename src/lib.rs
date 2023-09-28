@@ -4,10 +4,13 @@ use num_bigint::BigUint;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BSGS(String);
+pub struct Parallel(String);
 
 
+use rayon::prelude::*;
 use num_traits::{One, Zero};
 use std::collections::HashMap;
+use std::sync::{Mutex, Arc};
 // https://github.com/ashutosh1206/Crypton/blob/master/Discrete-Logarithm-Problem/Algo-Baby-Step-Giant-Step/bsgs.py
 
 
@@ -42,11 +45,6 @@ impl BSGS {
     // """
     pub fn new(bsgs: String) -> Self {
         Self(bsgs)
-    }
-
-
-    impl Secp256k1 {
-        // TODO
     }
     
 
@@ -87,6 +85,64 @@ impl BSGS {
     }
 }
 
+impl Parallel  {
+    fn run(g: &BigUint, h: &BigUint, p: &BigUint) -> Option<BigUint>  {
+        let mod_size = p.bits();
+
+        println!("[+] Using BSGS algorithm to solve DLP");
+        println!("[+] Modulus size: {}. Warning! BSGS not space efficient\n", mod_size);
+
+        let m = (p.clone() - BigUint::one()).sqrt() + BigUint::one();
+
+
+        let num_threads = num_cpus::get();
+        let chunk_size = m.clone()/num_threads;
+        let lookup_table: Arc<Mutex<HashMap<BigUint, BigUint>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        (0..num_threads).into_par_iter().for_each(|thread_num| {
+            let start = thread_num * &chunk_size;
+            let clone = start.clone();
+            let end = if thread_num == (num_threads - 1) {
+                m.clone()
+            } else {
+                start + &chunk_size
+            };
+    
+            let mut j = clone;
+            
+            while j < end {
+                let key = g.modpow(&j, &p);
+                // Lock the mutex to access and update the shared lookup table
+                let mut locked_table = lookup_table.lock().unwrap();
+                locked_table.insert(key.clone(), j.clone());
+                let jbis = j.clone();
+                j = jbis + BigUint::one();
+            }
+        });
+    
+            // Continue with the Giant Step pre-computation and Giant Steps as before
+    
+            let c = g.modpow(&(m.clone() * (*&p - BigUint::from(2u32))), &p);
+    
+            let mut i = BigUint::zero();
+            while &i < &m {
+                let temp = &(h * &c.modpow(&i, &p)) % p;
+        
+                // Lock the mutex to access the shared lookup table
+                let locked_table = lookup_table.lock().unwrap();
+                if let Some(j) = locked_table.get(&temp) {
+                    // x found
+                    return Some(i.clone() * m.clone() + j.clone());
+                }
+        
+                i = &i + BigUint::one();
+            }
+
+            None
+
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +167,32 @@ mod tests {
         let h = BigUint::parse_bytes(b"362073897", 10).unwrap();
         let p = BigUint::parse_bytes(b"2500000001", 10).unwrap();
         let result = BSGS::run(&g, &h, &p);
+        let c =  g.modpow(&result.unwrap(), &p);
+        assert_eq!(c, answer);
+    }
+
+
+
+
+    #[test]
+    fn it_works_3() {
+        let answer = BigUint::parse_bytes(b"362073897", 10).unwrap();
+        let g = BigUint::parse_bytes(b"3", 10).unwrap();
+        let h = BigUint::parse_bytes(b"362073897", 10).unwrap();
+        let p = BigUint::parse_bytes(b"2500000001", 10).unwrap();
+        let result = Parallel::run(&g, &h, &p);
+        let c =  g.modpow(&result.unwrap(), &p);
+        assert_eq!(c, answer);
+    }
+
+
+    #[test]
+    fn it_works_4() {
+        let answer = BigUint::parse_bytes(b"4178319614", 10).unwrap();
+        let g = BigUint::parse_bytes(b"2", 10).unwrap();
+        let h = BigUint::parse_bytes(b"4178319614", 10).unwrap();
+        let p = BigUint::parse_bytes(b"6971096459", 10).unwrap();
+        let result = Parallel::run(&g, &h, &p);
         let c =  g.modpow(&result.unwrap(), &p);
         assert_eq!(c, answer);
     }
